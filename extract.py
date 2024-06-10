@@ -27,7 +27,10 @@ parser.add_argument('-v','--verbose',
                     help='verbose output')
 parser.add_argument('--version', 
                     action='version', 
-                    version="Certificate Extractor -- Version 0.1.0")
+                    version="Certificate Extractor -- Version 0.2.0")
+parser.add_argument('--acas',
+                    action='store_true', 
+                    help="install certificates to Tenable Security Center")
 args = parser.parse_args()
 
 openssl_pkcs7_command = ["openssl", "pkcs7", "-in", args.pkcs7]
@@ -50,7 +53,7 @@ def make_path():
         if args.verbose:
             print("created.")
 
-def create_pem_file(is_pem: bool = False):
+def create_pem_file(is_pem: bool = False) -> str:
     pem_file = str(uuid4()) + ".pem"
     if is_pem:
         run(openssl_pkcs7_command + ["-print_certs", "-out", pem_file])
@@ -58,7 +61,7 @@ def create_pem_file(is_pem: bool = False):
         run(openssl_pkcs7_command + ["-print_certs", "-inform", "DER", "-out", pem_file])
     return pem_file
 
-def read_certs(pem_file: str):
+def read_certs(pem_file: str) -> list:
     certs = []
     cert = ""
     start_line = False
@@ -73,11 +76,11 @@ def read_certs(pem_file: str):
                 start_line = False
                 certs.append(cert)
                 cert = ""
-    remove(pem_file)
     return certs
 
-def write_certs(certs: list):
-    if args.split:
+def write_certs(certs: list) -> list:
+    cert_files = []
+    if args.split or args.acas:
         if args.verbose:
             print("Writing individual certificates to files...")
 
@@ -95,6 +98,7 @@ def write_certs(certs: list):
                 print(f"{args.dest}/{ca}")
 
             cert_file = path.join(args.dest, ca)
+            cert_files.append(cert_file)
             with open(cert_file, "w") as file:
                 file.write(cert)
     else:
@@ -102,31 +106,50 @@ def write_certs(certs: list):
         for cert in certs:
             with open(cert_file, "a") as file:
                 file.write(cert)
+    return cert_files
 
-def extract_certs(is_pem: bool = False):
-    make_path()
-    pem_file = create_pem_file(is_pem)
-    certs = read_certs(pem_file)
-    write_certs(certs)
-    print(f"Successfully extracted {len(certs)} certificates to {args.dest} in PEM format.")
-
-def detect_pem():
+def detect_pem() -> bool:
     if args.verbose:
-        print(f"Detecting format of {args.pkcs7}...", end=" ")
+        print(f"Determining format of {args.pkcs7}...", end=" ")
 
     if call(openssl_pkcs7_command, stderr=DEVNULL, stdout=DEVNULL) == 0:
+        if args.verbose:
+            print("PEM detected.")
         return True
     elif call(openssl_pkcs7_command + ["-inform", "DER"], stderr=DEVNULL, stdout=DEVNULL) == 0:
+        if args.verbose:
+            print("DER detected.")
         return False
     else:
         print(f"{args.pkcs7} isn't a DER or PEM formatted PKCS7")
         exit(1)
 
+def install_acas(cert_files: list):
+    if path.exists("/opt/sc/support/bin/php"):
+        for cert in cert_files:
+            run(["/opt/sc/support/bin/php", "/opt/sc/src/tools/installCA.php", cert])
+    print('Security Center not found, or not installed in default location.')
+    exit(1)
+
+def restart_security_center():
+    print('Succesfully installed certificates in Security Center')
+    while True:
+        result = input('Restart Security Center [yes/no]?')
+        if result == 'yes':
+            run(['systemctl', 'restart', 'SecurityCenter'])
+            break
+        if result == 'no':
+            break
+
 if __name__ == '__main__':
+    make_path()
     is_pem = detect_pem()
-    if args.verbose:
-        if is_pem == True:
-            print("PEM formatted.")
-        else:
-            print("DER formatted.")
-    extract_certs(is_pem)
+    pem_file = create_pem_file(is_pem)
+    certs = read_certs(pem_file)
+    remove(pem_file)
+    cert_files = write_certs(certs)
+    print(f"Successfully extracted {len(certs)} certificates to {args.dest} in PEM format.")
+
+    if args.acas:
+        install_acas(cert_files)
+        restart_security_center()
